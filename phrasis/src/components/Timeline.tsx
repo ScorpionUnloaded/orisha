@@ -1,7 +1,7 @@
 /** Shared time axis and syntax overlays for every time-aligned editor. */
 import { useMemo } from 'react';
 import type { ReactElement } from 'react';
-import { barTicks, cadencePoints, placeDrawings } from '../model/syntax';
+import { barTicks, CADENCES, cadencePoints, placeDrawings } from '../model/syntax';
 import type { Project } from '../model/types';
 import { select, seek, useApp } from '../store/store';
 
@@ -75,7 +75,7 @@ export function SyntaxBrackets({ project, axis, y, bottom, prefix, cadenceLabel 
     if (pl.endTick <= axis.startTick || pl.startTick >= axis.endTick) continue;
     const sel = pl.drawing.id === selectedId;
     const cad = cads.find((c) => c.drawingId === pl.drawing.id);
-    const cadStart = cad ? Math.max(pl.startTick, cad.arrival - axis.barLen / 2) : pl.endTick;
+    const cadStart = cad ? Math.max(pl.startTick, cad.arrival - Math.min(axis.barLen / 2, (cad.arrival - pl.startTick) / 3)) : pl.endTick;
     const xa = clampX(axis.xOf(pl.startTick)) + 4;
     const xb = clampX(axis.xOf(cad ? cadStart : pl.endTick)) - (cad ? 8 : 4);
     if (showTint && sel) {
@@ -85,6 +85,8 @@ export function SyntaxBrackets({ project, axis, y, bottom, prefix, cadenceLabel 
         if (mid > axis.x0 && mid < axis.x1) out.push(<line key={`split${pl.drawing.id}`} x1={mid} x2={mid} y1={y} y2={bottom} stroke="rgba(74,136,223,0.28)" strokeWidth={1} />);
       }
     }
+    const full = prefix ? `${prefix} ${pl.drawing.label}` : pl.drawing.label;
+    const label = xb - xa >= full.length * 7.4 + 6 ? full : pl.drawing.label;
     if (xb - xa > 20) {
       out.push(
         <g
@@ -95,7 +97,7 @@ export function SyntaxBrackets({ project, axis, y, bottom, prefix, cadenceLabel 
           <path d={`M${xa},${y + tick} V${y} H${xb} V${y + tick}`} className={`bracket ${sel ? 'sel' : ''}`} />
           {sel && showMotifSplit && <path d={`M${(xa + xb) / 2},${y} v${-4}`} className="bracket sel" />}
           <text x={(xa + xb) / 2} y={y - 10} textAnchor="middle" className={`bracket-label ${sel ? 'sel' : ''}`}>
-            {prefix ? `${prefix} ${pl.drawing.label}` : pl.drawing.label}
+            {label}
           </text>
           <rect x={xa} y={y - 28} width={xb - xa} height={32} fill="transparent" />
         </g>,
@@ -105,11 +107,13 @@ export function SyntaxBrackets({ project, axis, y, bottom, prefix, cadenceLabel 
       const ca = clampX(axis.xOf(cadStart));
       const cb = clampX(axis.xOf(Math.min(pl.endTick + axis.barLen * 0.1, cad.arrival + axis.barLen / 2)));
       if (cb - ca > 16) {
+        const long = cadenceLabel === 'plain' ? 'Cadence' : CAD_SHORT[cad.type];
+        const text = cb - ca >= long.length * 7 + 4 ? long : CADENCES[cad.type].frac;
         out.push(
           <g key={`cad${pl.drawing.id}`}>
             <path d={`M${ca},${y + tick} V${y} H${cb} V${y + tick}`} className="bracket cad" />
             <text x={(ca + cb) / 2} y={y - 10} textAnchor="middle" className="bracket-label cad">
-              {cadenceLabel === 'plain' ? 'Cadence' : CAD_SHORT[cad.type]}
+              {text}
             </text>
           </g>,
         );

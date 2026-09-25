@@ -94,6 +94,7 @@ function LabStaff({ project, axis, height }: { project: Project; axis: Axis; hei
         opts={opts}
         geo={geo}
         xOf={axis.xOf}
+        spacing={axis.bars > 8 ? 'barwise' : 'axis'}
         classOf={classOf}
         onNoteDown={(id, e) => {
           selectNotes([id], e.shiftKey || e.metaKey);

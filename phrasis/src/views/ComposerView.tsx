@@ -68,7 +68,7 @@ function MelodicStaff({ project, axis, height }: { project: Project; axis: Axis;
   const fifths = keyFifths(project.key);
   const total = totalBars(project) * axis.barLen;
   const [bend, setBend] = useState<{ drawingId: string; noteId: string; y0: number; steps: number } | null>(null);
-  const sp = 8;
+  const sp = axis.bars > 8 ? 6.6 : 8;
   const staffTop = Math.max(78, Math.min(98, height / 2 - 6));
 
   const opts = useMemo<EngraveOptions>(
@@ -84,7 +84,7 @@ function MelodicStaff({ project, axis, height }: { project: Project; axis: Axis;
   );
   const geo = useMemo<StaffGeometry>(
     () => ({ sp, top: staffTop, left: 10, right: axis.x1, preludeX: 8, finalBar: axis.endTick >= total }),
-    [staffTop, axis.x1, axis.endTick, total],
+    [sp, staffTop, axis.x1, axis.endTick, total],
   );
   const drawingOf = useMemo(() => new Map(notes.map((n) => [n.id, n.drawingId])), [notes]);
   const drawingIndex = useMemo(() => new Map(project.drawings.map((d, i) => [d.id, i])), [project.drawings]);
@@ -109,7 +109,7 @@ function MelodicStaff({ project, axis, height }: { project: Project; axis: Axis;
   return (
     <svg className="svg-fill" onPointerDown={() => selectNotes([])}>
       <SyntaxBrackets project={project} axis={axis} y={48} bottom={height - 14} prefix="Drawing" selectedId={selectedId} />
-      <Staff notes={notes as Note[]} opts={opts} geo={geo} xOf={axis.xOf} classOf={classOf} onNoteDown={onNoteDown}>
+      <Staff notes={notes as Note[]} opts={opts} geo={geo} xOf={axis.xOf} spacing={axis.bars > 8 ? 'barwise' : 'axis'} classOf={classOf} onNoteDown={onNoteDown}>
         {(eng) => {
           const extras: ReactElement[] = [];
           if (show === 'contour' || show === 'syntax') {
@@ -223,13 +223,13 @@ function RhythmicStaff({ project, axis, height }: { project: Project; axis: Axis
   const viewNotes = useViewNotes(project, axis);
   const notes = useMemo(() => viewNotes.map((n) => ({ ...n, slur: undefined })), [viewNotes]);
   const total = totalBars(project) * axis.barLen;
-  const sp = 9;
+  const sp = axis.bars > 8 ? 7.6 : 9;
   const top = 58;
   const opts = useMemo<EngraveOptions>(
     () => ({ clef: 'percussion', fifths: 0, meter: project.meter, from: axis.startTick, to: axis.endTick, percussion: () => ({ positions: [1] }) }),
     [project.meter, axis.startTick, axis.endTick],
   );
-  const geo = useMemo<StaffGeometry>(() => ({ sp, top, left: 10, right: axis.x1, preludeX: 8, showKey: false, finalBar: axis.endTick >= total }), [axis.x1, axis.endTick, total]);
+  const geo = useMemo<StaffGeometry>(() => ({ sp, top, left: 10, right: axis.x1, preludeX: 8, showKey: false, finalBar: axis.endTick >= total }), [sp, axis.x1, axis.endTick, total]);
   const sel = useMemo(() => new Set(noteSel), [noteSel]);
   const classOf = useCallback((id: string | undefined) => (id && sel.has(id) ? 'sel' : undefined), [sel]);
 
@@ -249,6 +249,7 @@ function RhythmicStaff({ project, axis, height }: { project: Project; axis: Axis
         opts={opts}
         geo={geo}
         xOf={axis.xOf}
+        spacing={axis.bars > 8 ? 'barwise' : 'axis'}
         classOf={classOf}
         onNoteDown={(id, e) => {
           selectNotes([id], e.shiftKey || e.metaKey);

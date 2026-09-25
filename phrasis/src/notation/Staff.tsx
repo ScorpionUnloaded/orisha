@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { PointerEvent as ReactPointerEvent, ReactNode } from 'react';
 import type { Meter, Note } from '../model/types';
-import { buildBars, compactMapping, engrave, preludeWidth } from './layout';
+import { barwiseMapping, buildBars, compactMapping, engrave, preludeWidth } from './layout';
 import type { Clef, EngraveOptions, Engraved, Prim, StaffGeometry, XMap } from './layout';
 
 export interface StaffProps {
@@ -13,6 +13,8 @@ export interface StaffProps {
   classOf?: (noteId: string | undefined) => string | undefined;
   onNoteDown?: (noteId: string, e: ReactPointerEvent) => void;
   onEngraved?: (e: Engraved) => void;
+  /** With `xOf`: 'axis' places notes exactly on the axis, 'barwise' only aligns barlines. */
+  spacing?: 'axis' | 'barwise';
   children?: (e: Engraved) => ReactNode;
 }
 
@@ -51,18 +53,21 @@ export function renderPrims(prims: Prim[], sp: number, onNoteDown?: StaffProps['
   });
 }
 
-export function useEngraving(notes: Note[], opts: EngraveOptions, geo: StaffGeometry, xOf: XMap | undefined, classOf?: StaffProps['classOf']) {
+export function useEngraving(notes: Note[], opts: EngraveOptions, geo: StaffGeometry, xOf: XMap | undefined, classOf?: StaffProps['classOf'], spacing: 'axis' | 'barwise' = 'axis') {
   return useMemo(() => {
     const bars = buildBars(notes, opts);
     const pre = geo.showClef === false && geo.showKey === false && geo.showTime === false ? 0 : preludeWidth(opts.clef, opts.fifths, geo.sp, geo.showKey !== false, geo.showTime !== false);
-    const map = xOf ?? compactMapping(bars, geo.preludeX + pre + geo.sp * 0.4, geo.right - (geo.preludeX + pre + geo.sp * 0.4), geo.sp);
+    const map = xOf
+      ? spacing === 'barwise'
+        ? barwiseMapping(bars, xOf, geo.sp)
+        : xOf
+      : compactMapping(bars, geo.preludeX + pre + geo.sp * 0.4, geo.right - (geo.preludeX + pre + geo.sp * 0.4), geo.sp);
     return engrave(bars, opts, geo, map, classOf);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [notes, opts, geo, xOf, classOf]);
+  }, [notes, opts, geo, xOf, classOf, spacing]);
 }
 
-export function Staff({ notes, opts, geo, xOf, classOf, onNoteDown, children }: StaffProps) {
-  const engraved = useEngraving(notes, opts, geo, xOf, classOf);
+export function Staff({ notes, opts, geo, xOf, classOf, onNoteDown, spacing, children }: StaffProps) {
+  const engraved = useEngraving(notes, opts, geo, xOf, classOf, spacing);
   return (
     <g className="staff-g">
       {renderPrims(engraved.prims, geo.sp, onNoteDown)}
