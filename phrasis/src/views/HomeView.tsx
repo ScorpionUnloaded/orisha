@@ -23,6 +23,9 @@ import {
   useApp,
 } from '../store/store';
 
+/** Hosted previews run in a sandbox that blocks file downloads. */
+const CAN_DOWNLOAD = !import.meta.env.VITE_HOSTED;
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const pad = (n: number) => String(n).padStart(2, '0');
 
@@ -48,8 +51,12 @@ function projectMenu(p: Project, archived: boolean): MenuItem[] {
     { label: 'Open in Period Builder', onSelect: () => openProject(p.id, 'period') },
     'sep',
     { label: 'Duplicate', onSelect: () => duplicateProject(p.id) },
-    { label: 'Export MIDI', onSelect: () => download(`${slug(p.name)}.mid`, projectToMidi(p) as BlobPart, 'audio/midi') },
-    { label: 'Export project (.json)', onSelect: () => download(`${slug(p.name)}.phrasis.json`, JSON.stringify(p, null, 2), 'application/json') },
+    ...(CAN_DOWNLOAD
+      ? [
+          { label: 'Export MIDI', onSelect: () => download(`${slug(p.name)}.mid`, projectToMidi(p) as BlobPart, 'audio/midi') },
+          { label: 'Export project (.json)', onSelect: () => download(`${slug(p.name)}.phrasis.json`, JSON.stringify(p, null, 2), 'application/json') },
+        ]
+      : []),
     'sep',
     { label: archived ? 'Restore from Archives' : 'Move to Archives', onSelect: () => archiveProject(p.id, !archived) },
     { label: 'Delete', danger: true, onSelect: () => deleteProject(p.id) },

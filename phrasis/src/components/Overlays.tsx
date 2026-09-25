@@ -74,7 +74,7 @@ function VariationsModal({ drawingId }: { drawingId: string }) {
   const up = (patch: Partial<GenerateOptions>) => setOpts((o) => ({ ...o, ...patch }));
   return (
     <ModalFrame title={`Generate Variations — Drawing ${d.label}`}>
-      <div className="modal-body" style={{ display: 'grid', gridTemplateColumns: '220px 1fr', gap: 22 }}>
+      <div className="modal-body var-layout">
         <div>
           <div className="insp-caps">Preserve</div>
           <Check label="Cadences" on={opts.preserveCadence} set={(v) => up({ preserveCadence: v })} />
@@ -103,7 +103,7 @@ function VariationsModal({ drawingId }: { drawingId: string }) {
             Deterministic proposals — every card lists the exact transformations that produced it. Nothing changes until you choose <b>Use</b>.
           </p>
         </div>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignContent: 'start' }}>
+        <div className="var-proposals">
           {proposals.length === 0 && <div style={{ color: 'var(--text-3)', padding: 20 }}>Enable at least one dimension to vary.</div>}
           {proposals.map((p, i) => (
             <div key={i} style={{ border: '1px solid var(--line)', borderRadius: 8, background: 'var(--paper)', padding: '8px 10px' }}>

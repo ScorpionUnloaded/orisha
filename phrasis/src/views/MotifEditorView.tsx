@@ -235,7 +235,7 @@ export function MotifEditorView() {
           ]}
         />
       </div>
-      <div ref={ref} style={{ flex: '1 1 0', minHeight: 170, position: 'relative', margin: '0 12px 0 0' }}>
+      <div ref={ref} className="motif-canvas" style={{ flex: '1 1 0', minHeight: 170, position: 'relative', margin: '0 12px 0 0' }}>
         {size.width > 0 && <EditorArea motif={motif} width={size.width} height={size.height} previewNotes={preview} />}
         {!motif.notes.length && <div className="empty-hint">Choose the pencil and click in the grid to draw a motif</div>}
       </div>

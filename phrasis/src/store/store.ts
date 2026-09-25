@@ -276,7 +276,11 @@ export function toast(text: string) {
 
 export function setView(view: View) {
   set({ view });
-  if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
+  try {
+    if (location.hash !== `#${view}`) history.replaceState(null, '', `#${view}`);
+  } catch {
+    /* some embedded frames refuse history writes */
+  }
 }
 
 export function openProject(id: string, view: View = 'composer') {
