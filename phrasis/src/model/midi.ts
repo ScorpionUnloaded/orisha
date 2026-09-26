@@ -34,7 +34,7 @@ export function projectToMidi(project: Project): Uint8Array {
     events.push({ tick: Math.max(0, Math.round(start)), data: [0x90 | ch, pitch & 0x7f, Math.max(1, Math.min(127, vel))], order: 2 });
     events.push({ tick: Math.max(0, Math.round(start + dur)), data: [0x80 | ch, pitch & 0x7f, 0], order: 1 });
   };
-  for (const n of absoluteNotes(project)) add(0, n.pitch, n.abs, n.dur, n.vel);
+  for (const n of absoluteNotes(project)) if (!n.mute) add(0, n.pitch, n.abs, n.dur, n.vel);
   for (const n of project.lowerVoice ?? []) add(1, n.pitch, n.start, n.dur, n.vel);
   events.sort((a, b) => a.tick - b.tick || a.order - b.order);
   const track: number[] = [];

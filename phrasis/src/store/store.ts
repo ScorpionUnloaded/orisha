@@ -6,9 +6,32 @@ import type { RhythmCharacter, SymmetryKind } from '../model/analysis';
 import { demoProject, motifLibrary, projectFromTemplate, recentProjects, stepsFor } from '../model/demo';
 import type { TemplateId } from '../model/demo';
 import { rerhythm, rhythmTemplate } from '../model/rhythmTemplates';
-import { absoluteNotes, barTicks, deriveMembers, placeDrawings, totalBars, uid } from '../model/syntax';
+import {
+  adjacentChord,
+  clearRange,
+  deleteTime,
+  duplicate,
+  duplicateOffset,
+  glue,
+  insertTime,
+  paste,
+  resizeStart,
+  selectAlternate,
+  selectInRange,
+  selectSamePitch,
+  setDurations,
+  span,
+  splitAt,
+  toClip,
+  toggleMute,
+  toggleSlur,
+  transpose,
+  invertSelection,
+} from '../model/editing';
+import type { ChordKind, EditResult, Ids } from '../model/editing';
+import { absoluteNotes, barTicks, deriveMembers, placeDrawings, scaleAtTick, totalBars, uid } from '../model/syntax';
 import type { AbsNote } from '../model/syntax';
-import { keyFifths, sameScale } from '../model/theory';
+import { keyFifths, pitchForLetter, sameScale } from '../model/theory';
 import {
   applyContour,
   applyRhythm,
@@ -53,6 +76,30 @@ export type LibraryFilter =
   | { kind: 'all' | 'user' | 'core' | 'rhythmic' | 'intervals' | 'contour' | 'favourites' }
   | { kind: 'collection'; id: string };
 export type HomeSection = 'home' | 'templates' | 'studies' | 'archives' | 'all';
+/** Piano-roll tools (FL Studio names: Draw, Paint, Select, Slice, Delete, Mute, Playback). */
+export type RollTool = 'pointer' | 'draw' | 'paint' | 'select' | 'slice' | 'erase' | 'mute' | 'scrub';
+/** Which editor receives the arrow keys: the staves (score-style) or the piano roll (DAW-style). */
+export type FocusPane = 'staff' | 'roll';
+export interface RollOpts {
+  /** Note names on the notes. */
+  names: boolean;
+  /** Darken rows outside the drawing's scale. */
+  scale: boolean;
+  /** Velocity lane under the grid. */
+  velocity: boolean;
+  /** Colour notes by the drawing they belong to. */
+  byDrawing: boolean;
+  /** Show the lower voice as ghost notes. */
+  ghosts: boolean;
+}
+export type NoteToolId = 'quantize' | 'randomize' | 'strum' | 'arpeggiate' | 'velocity' | 'limit' | 'transpose' | 'chop';
+export type Modal =
+  | null
+  | { kind: 'variations'; drawingId: string }
+  | { kind: 'new-project'; template: TemplateId }
+  | { kind: 'shortcuts' }
+  | { kind: 'note-props' }
+  | { kind: 'note-tool'; tool: NoteToolId };
 
 interface Snapshot {
   projects: Project[];
@@ -95,12 +142,38 @@ export interface AppState {
   volume: number;
   expanded: Record<string, boolean>;
   toasts: Toast[];
-  modal: null | { kind: 'variations'; drawingId: string } | { kind: 'new-project'; template: TemplateId } | { kind: 'shortcuts' };
+  modal: Modal;
+  focusPane: FocusPane;
+  rollTool: RollTool;
+  stamp: ChordKind;
+  rollOpts: RollOpts;
+  /** Time selection from the ruler (also the loop range). */
+  timeSel: { from: number; to: number } | null;
+  /** Copied notes, rebased to tick 0. */
+  clipboard: Note[] | null;
+  /** Score-style note input (N): the caret and the notes entered last (for chords, ties, repeat). */
+  noteInput: { caret: number; last: string[] } | null;
+  /** Collapsed editor panels. */
+  collapsed: Record<string, boolean>;
   past: Snapshot[];
   future: Snapshot[];
 }
 
 const STORAGE_KEY = 'phrasis.v1';
+const PREFS_KEY = 'phrasis.prefs.v1';
+const PREF_KEYS = ['rollTool', 'stamp', 'rollOpts', 'snap', 'noteLength', 'collapsed', 'scaleQuantize'] as const;
+type Prefs = Partial<Pick<AppState, (typeof PREF_KEYS)[number]>>;
+
+function loadPrefs(): Prefs {
+  try {
+    const raw = localStorage.getItem(PREFS_KEY);
+    return raw ? (JSON.parse(raw) as Prefs) : {};
+  } catch {
+    return {};
+  }
+}
+
+export const DEFAULT_ROLL_OPTS: RollOpts = { names: true, scale: true, velocity: true, byDrawing: false, ghosts: true };
 
 function loadSaved(): Partial<AppState> | null {
   try {
@@ -121,6 +194,7 @@ function initialView(): View {
 
 function initial(): AppState {
   const saved = loadSaved();
+  const prefs = loadPrefs();
   const projects = saved?.projects ?? recentProjects();
   const library = saved?.library ?? motifLibrary();
   const projectId = saved?.projectId && projects.some((p) => p.id === saved.projectId) ? saved.projectId : projects[0].id;
@@ -143,9 +217,9 @@ function initial(): AppState {
     rhythmShow: 'staff',
     motifShow: 'contour',
     motifTool: 'draw',
-    noteLength: T8,
-    snap: T8,
-    scaleQuantize: false,
+    noteLength: prefs.noteLength ?? T8,
+    snap: prefs.snap ?? T8,
+    scaleQuantize: prefs.scaleQuantize ?? false,
     zoom: 1,
     scrollBar: 0,
     playing: false,
@@ -156,6 +230,14 @@ function initial(): AppState {
     expanded: { period: true, [`member:${project.drawings[0].id}`]: true },
     toasts: [],
     modal: null,
+    focusPane: 'roll',
+    rollTool: prefs.rollTool ?? 'draw',
+    stamp: prefs.stamp ?? 'none',
+    rollOpts: { ...DEFAULT_ROLL_OPTS, ...prefs.rollOpts },
+    timeSel: null,
+    clipboard: null,
+    noteInput: null,
+    collapsed: prefs.collapsed ?? {},
     past: [],
     future: [],
   };
@@ -164,6 +246,18 @@ function initial(): AppState {
 export const useApp = create<AppState>(() => initial());
 const set = useApp.setState;
 const get = useApp.getState;
+
+// Editor preferences survive reloads.
+useApp.subscribe((s, prev) => {
+  if (!PREF_KEYS.some((k) => s[k] !== prev[k])) return;
+  try {
+    const prefs: Prefs = {};
+    for (const k of PREF_KEYS) (prefs as Record<string, unknown>)[k] = s[k];
+    localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    /* storage unavailable */
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Selectors
@@ -262,6 +356,7 @@ function fixSelection() {
   }
   const ids = new Set(p.drawings.flatMap((d) => d.notes.map((n) => n.id)));
   set({ noteSel: s.noteSel.filter((id) => ids.has(id)) });
+  if (s.noteInput) set({ noteInput: { ...s.noteInput, last: s.noteInput.last.filter((id) => ids.has(id)) } });
 }
 
 let toastId = 0;
@@ -297,6 +392,8 @@ export function openProject(id: string, view: View = 'composer') {
     playhead: 0,
     motifId: p.motifs[0] ?? get().motifId,
     expanded: { ...get().expanded, period: true, [`member:${p.drawings[0].id}`]: true },
+    timeSel: null,
+    noteInput: null,
   });
   setView(view);
   persist();
@@ -335,6 +432,12 @@ export function select(sel: SyntaxSel) {
 
 export function selectNotes(ids: string[], additive = false) {
   set((s) => ({ noteSel: additive ? Array.from(new Set([...s.noteSel, ...ids])) : ids }));
+  // The inspector follows the drawing that owns a clicked note.
+  const s = get();
+  if (ids.length && s.noteSel.length) {
+    const owner = absoluteNotes(currentProject(s)).find((n) => n.id === ids[ids.length - 1])?.drawingId;
+    if (owner && !(s.selection.kind === 'drawing' && s.selection.id === owner)) set({ selection: { kind: 'drawing', id: owner } });
+  }
 }
 
 export function toggleExpanded(id: string) {
@@ -355,6 +458,13 @@ export function scrollBy(bars: number) {
 }
 
 export const setUi = (patch: Partial<AppState>) => set(patch);
+
+/** Route the keyboard to an editor; leaving the staves ends note input. */
+export function focusPane(pane: FocusPane) {
+  const s = get();
+  if (s.focusPane !== pane) set({ focusPane: pane });
+  if (pane === 'roll' && s.noteInput) set({ noteInput: null });
+}
 
 // ---------------------------------------------------------------------------
 // Note editing (absolute ticks, redistributed to the owning drawing)
@@ -425,6 +535,529 @@ export function transposeSelection(steps: number, octave = false) {
       return { ...n, pitch: moved.pitch };
     }),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Editing toolkit: whole-period edits in absolute time (piano roll + staves)
+
+/** Every note of the period with an absolute `start`. */
+export function periodNotes(p: Project = currentProject()): Note[] {
+  return absoluteNotes(p).map(({ abs, drawingId: _d, ...n }) => {
+    void _d;
+    return { ...n, start: abs };
+  });
+}
+
+export function periodEnd(p: Project = currentProject()): number {
+  return totalBars(p) * barTicks(p.meter);
+}
+
+/** Scale of the drawing that contains a tick (what scale-degree edits use). */
+export function drawingScaleAt(p: Project, tick: number): ScaleRef {
+  const pl = placeDrawings(p).find((x) => tick >= x.startTick && tick < x.endTick) ?? placeDrawings(p).slice(-1)[0];
+  return pl?.drawing.scale ?? p.key;
+}
+
+/** Apply an absolute-time edit to the period as one undoable step. */
+export function editPeriod(fn: (notes: Note[]) => EditResult | Note[]) {
+  let sel: string[] | undefined;
+  let ids = new Set<string>();
+  editNotes((abs) => {
+    const r = fn(abs.map(({ abs: a, drawingId: _d, ...n }) => {
+      void _d;
+      return { ...n, start: a };
+    }));
+    const res = Array.isArray(r) ? { notes: r } : r;
+    sel = res.sel;
+    ids = new Set(res.notes.map((n) => n.id));
+    return res.notes.map((n) => ({ ...n, abs: n.start }));
+  });
+  set((s) => ({ noteSel: sel ?? s.noteSel.filter((id) => ids.has(id)) }));
+}
+
+/** Notes an editing command applies to: the note selection, else the selected drawing. */
+export function targetIds(s: AppState = get()): string[] {
+  if (s.noteSel.length) return s.noteSel;
+  return selectedDrawing(s)?.notes.map((n) => n.id) ?? [];
+}
+
+/** Run a note tool on the target notes. */
+export function runTool(fn: (notes: Note[], ids: Ids) => EditResult, done?: string) {
+  const ids = new Set(targetIds());
+  if (!ids.size) {
+    toast('Select some notes first');
+    return;
+  }
+  editPeriod((notes) => fn(notes, ids));
+  if (done) toast(done);
+}
+
+export const scaleAtFor = (p: Project) => (tick: number) => drawingScaleAt(p, tick);
+
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : 's'}`;
+
+// --- clipboard
+
+export function copyNotes(cut = false) {
+  const s = get();
+  const ids = new Set(s.noteSel);
+  if (!ids.size) {
+    toast('Nothing selected');
+    return;
+  }
+  set({ clipboard: toClip(periodNotes(), ids) });
+  if (cut) editPeriod((notes) => ({ notes: notes.filter((n) => !ids.has(n.id)), sel: [] }));
+  toast(`${cut ? 'Cut' : 'Copied'} ${plural(ids.size, 'note')}`);
+}
+
+/** Paste at `at`, or at the time selection / playhead; the playhead moves past the pasted notes. */
+export function pasteNotes(at?: number) {
+  const s = get();
+  const clip = s.clipboard;
+  if (!clip?.length) {
+    toast('The clipboard is empty — copy notes with ⌘C');
+    return;
+  }
+  const p = currentProject(s);
+  const tick = Math.max(0, Math.round(at ?? (s.timeSel ? s.timeSel.from : Math.floor(s.playhead / s.snap) * s.snap)));
+  const fits = clip.filter((n) => n.start + tick < periodEnd(p)).length;
+  if (!fits) {
+    toast('Nothing to paste there — that is past the end of the period');
+    return;
+  }
+  editPeriod((notes) => paste(notes, clip, tick, periodEnd(p)));
+  if (fits < clip.length) toast(`Pasted ${plural(fits, 'note')} — ${clip.length - fits} fell past the end of the period`);
+  const len = span(clip)?.to ?? 0;
+  if (!s.playing) set({ playhead: Math.min(periodEnd(p), tick + len) });
+  ensureVisible(tick);
+}
+
+/** Duplicate the selection right after itself (FL ⌘B, Sibelius R). */
+export function duplicateNotes() {
+  const s = get();
+  const ids = new Set(s.noteSel);
+  if (!ids.size) {
+    toast('Select notes to duplicate');
+    return;
+  }
+  const notes = periodNotes();
+  const sel = notes.filter((n) => ids.has(n.id));
+  const offset = s.timeSel && sel.every((n) => n.start >= s.timeSel!.from && n.start < s.timeSel!.to) ? s.timeSel.to - s.timeSel.from : duplicateOffset(sel, s.snap);
+  if (Math.min(...sel.map((n) => n.start)) + offset >= periodEnd()) {
+    toast('No room after the selection — add a drawing or bars to continue');
+    return;
+  }
+  editPeriod((all) => duplicate(all, ids, offset, periodEnd()));
+  if (s.timeSel) set({ timeSel: { from: s.timeSel.from + offset, to: s.timeSel.to + offset } });
+  const first = Math.min(...sel.map((n) => n.start)) + offset;
+  ensureVisible(first);
+}
+
+// --- selection
+
+export function selectAllNotes() {
+  set({ noteSel: periodNotes().map((n) => n.id) });
+}
+
+export function deselectNotes() {
+  set({ noteSel: [] });
+}
+
+export function invertNoteSelection() {
+  set((s) => ({ noteSel: invertSelection(periodNotes(), new Set(s.noteSel)) }));
+}
+
+export function selectSamePitchNotes() {
+  set((s) => ({ noteSel: selectSamePitch(periodNotes(), new Set(targetIds(s))) }));
+}
+
+export function selectAlternateNotes(odd: boolean) {
+  set((s) => ({ noteSel: selectAlternate(periodNotes(), new Set(targetIds(s)), odd) }));
+}
+
+export function selectTimeRange(from: number, to: number, additive = false) {
+  selectNotes(selectInRange(periodNotes(), Math.min(from, to), Math.max(from, to)), additive);
+}
+
+/** Every note of one pitch (⌘-click a piano key). */
+export function selectPitch(pitch: number, additive = false) {
+  selectNotes(
+    periodNotes()
+      .filter((n) => n.pitch === pitch)
+      .map((n) => n.id),
+    additive,
+  );
+}
+
+export function selectDrawingNotes(drawingId?: string) {
+  const s = get();
+  const id = drawingId ?? (s.selection.kind === 'drawing' ? s.selection.id : undefined);
+  const d = currentProject(s).drawings.find((x) => x.id === id);
+  if (d) set({ noteSel: d.notes.map((n) => n.id) });
+}
+
+/** Arrow-key navigation through the score: the next/previous chord (or bar with `byBar`). */
+export function selectAdjacent(dir: 1 | -1, extend = false, byBar = false) {
+  const s = get();
+  const p = currentProject(s);
+  const notes = periodNotes(p);
+  const ids = new Set(s.noteSel);
+  let next: Note[];
+  if (byBar) {
+    const bt = barTicks(p.meter);
+    const sel = notes.filter((n) => ids.has(n.id));
+    const ref = sel.length ? (dir > 0 ? Math.max(...sel.map((n) => n.start)) : Math.min(...sel.map((n) => n.start))) : viewWindow(s).start * bt;
+    const bar = Math.floor(ref / bt) + dir;
+    const inBar = notes.filter((n) => n.start >= bar * bt && n.start < (bar + 1) * bt);
+    const first = inBar.length ? Math.min(...inBar.map((n) => n.start)) : -1;
+    next = inBar.filter((n) => n.start === first);
+  } else next = adjacentChord(notes, ids, dir, viewWindow(s).start * barTicks(p.meter));
+  if (!next.length) return;
+  set({ noteSel: extend ? Array.from(new Set([...s.noteSel, ...next.map((n) => n.id)])) : next.map((n) => n.id) });
+  ensureVisible(next[0].start);
+  audition(next.map((n) => ({ ...n, start: 0, dur: Math.min(n.dur, 600) })));
+}
+
+// --- note properties
+
+export function setVelocities(map: Record<string, number>) {
+  if (!Object.keys(map).length) return;
+  editPeriod((notes) => notes.map((n) => (n.id in map ? { ...n, vel: Math.max(1, Math.min(127, Math.round(map[n.id]))) } : n)));
+}
+
+/** Patch properties of the given notes (inspector / note properties). */
+export function patchNotes(ids: string[], patch: Partial<Pick<Note, 'vel' | 'art' | 'mute' | 'slur' | 'pitch' | 'start' | 'dur'>>) {
+  const sel = new Set(ids);
+  if (!sel.size) return;
+  editPeriod((notes) =>
+    notes.map((n) => {
+      if (!sel.has(n.id)) return n;
+      const out = { ...n, ...patch };
+      if ('art' in patch && !patch.art) delete out.art;
+      if ('mute' in patch && !patch.mute) delete out.mute;
+      if ('slur' in patch && !patch.slur) delete out.slur;
+      out.pitch = Math.max(21, Math.min(108, out.pitch));
+      out.start = Math.max(0, out.start);
+      out.dur = Math.max(T16 / 2, out.dur);
+      return out;
+    }),
+  );
+}
+
+export function toggleMuteNotes(ids: string[] = get().noteSel) {
+  if (!ids.length) return;
+  editPeriod((notes) => toggleMute(notes, new Set(ids)));
+}
+
+export function toggleSlurNotes(ids: string[] = get().noteSel) {
+  if (!ids.length) {
+    toast('Select the notes to slur');
+    return;
+  }
+  editPeriod((notes) => toggleSlur(notes, new Set(ids)));
+}
+
+/** Tie = glue repeated pitches in the selection into single notes. */
+export function glueNotes(ids: string[] = get().noteSel) {
+  if (ids.length < 2) {
+    toast('Select two or more notes of the same pitch to tie them');
+    return;
+  }
+  editPeriod((notes) => glue(notes, new Set(ids)));
+}
+
+export function sliceNotes(ids: string[], tick: number) {
+  if (!ids.length) return;
+  editPeriod((notes) => splitAt(notes, new Set(ids), tick));
+}
+
+export function resizeNotesStart(ids: string[], d: number) {
+  if (!ids.length || !d) return;
+  editPeriod((notes) => resizeStart(notes, new Set(ids), d));
+}
+
+/** Add several notes at once (paint tool, chord stamps); they become the selection. */
+export function addNotesAbs(list: Array<{ start: number; pitch: number; dur: number; vel?: number }>) {
+  if (!list.length) return;
+  const end = periodEnd();
+  const added: Note[] = list
+    .filter((n) => n.start >= 0 && n.start < end)
+    .map((n) => ({ id: uid('n'), pitch: Math.max(21, Math.min(108, n.pitch)), start: n.start, dur: Math.max(T16 / 2, n.dur), vel: n.vel ?? 86 }));
+  editPeriod((notes) => ({ notes: [...notes, ...added], sel: added.map((n) => n.id) }));
+  const first = Math.min(...added.map((n) => n.start));
+  audition(added.filter((n) => n.start === first).map((n) => ({ ...n, start: 0, dur: Math.min(n.dur, TPQ) })));
+}
+
+/** Set written durations, notation-style (longer notes overwrite what follows). */
+export function setNoteDurations(ids: string[], dur: number) {
+  if (!ids.length) return;
+  editPeriod((notes) => setDurations(notes, new Set(ids), dur));
+}
+
+export function transposeNotes(ids: string[], amount: number, mode: 'chromatic' | 'diatonic') {
+  if (!ids.length || !amount) return;
+  const p = currentProject();
+  editPeriod((notes) => transpose(notes, new Set(ids), amount, mode, scaleAtFor(p)));
+  const moved = periodNotes().filter((n) => ids.includes(n.id));
+  const first = Math.min(...moved.map((n) => n.start));
+  audition(moved.filter((n) => n.start === first).map((n) => ({ ...n, start: 0, dur: Math.min(n.dur, 400) })));
+}
+
+// --- time
+
+export function setTimeSel(sel: { from: number; to: number } | null) {
+  if (sel && Math.abs(sel.to - sel.from) < 1) sel = null;
+  set({ timeSel: sel ? { from: Math.min(sel.from, sel.to), to: Math.max(sel.from, sel.to) } : null });
+  if (get().playing && get().loop) {
+    stop();
+    play();
+  }
+}
+
+/** Insert silence (the time selection's length, else one bar) at the time selection or playhead. */
+export function insertSpace() {
+  const s = get();
+  const p = currentProject(s);
+  const at = s.timeSel?.from ?? Math.floor(s.playhead / s.snap) * s.snap;
+  const len = s.timeSel ? s.timeSel.to - s.timeSel.from : barTicks(p.meter);
+  editPeriod((notes) => insertTime(notes, at, len, periodEnd(p)));
+  toast('Inserted space — notes past the end of the period were dropped');
+}
+
+export function deleteSpace() {
+  const s = get();
+  const p = currentProject(s);
+  const from = s.timeSel?.from ?? Math.floor(s.playhead / s.snap) * s.snap;
+  const to = s.timeSel?.to ?? from + barTicks(p.meter);
+  editPeriod((notes) => deleteTime(notes, from, to));
+  set({ timeSel: null });
+}
+
+/** Scroll the time-aligned editors so that a tick is visible. */
+export function ensureVisible(tick: number) {
+  const s = get();
+  const p = currentProject(s);
+  const bt = barTicks(p.meter);
+  const win = viewWindow(s);
+  const bar = Math.floor(tick / bt);
+  if (bar < win.start || bar >= win.start + win.bars) {
+    const total = totalBars(p);
+    set({ scrollBar: Math.max(0, Math.min(total - win.bars, bar - (bar < win.start ? win.bars - 1 : 0))) });
+  }
+}
+
+// --- durations (shared by the note keypad and note input)
+
+/** Plain note values in ticks, 32nd to whole. */
+export const NOTE_VALUES = [T16 / 2, T16, T8, TPQ, TPQ * 2, TPQ * 4];
+
+export function isDotted(dur: number): boolean {
+  return NOTE_VALUES.includes((dur * 2) / 3);
+}
+
+export function baseValue(dur: number): number {
+  return isDotted(dur) ? (dur * 2) / 3 : dur;
+}
+
+/**
+ * Choose a note value (keypad / number keys). Outside note input, the staff's
+ * selected notes take the new length too, as in a notation program.
+ */
+export function chooseDuration(value: number, applyToSelection = true) {
+  const s = get();
+  const dur = isDotted(s.noteLength) && NOTE_VALUES.includes(value) && value < TPQ * 4 ? value * 1.5 : value;
+  set({ noteLength: dur });
+  if (applyToSelection && !s.noteInput && s.noteSel.length) setNoteDurations(s.noteSel, dur);
+}
+
+export function toggleDot(applyToSelection = true) {
+  const s = get();
+  const dur = isDotted(s.noteLength) ? baseValue(s.noteLength) : s.noteLength < TPQ * 4 ? s.noteLength * 1.5 : s.noteLength;
+  set({ noteLength: dur });
+  if (applyToSelection && !s.noteInput && s.noteSel.length) setNoteDurations(s.noteSel, dur);
+}
+
+// --- score-style note input (N)
+
+export function startNoteInput(at?: number) {
+  const s = get();
+  const p = currentProject(s);
+  let caret = at;
+  if (caret === undefined) {
+    const sel = periodNotes(p).filter((n) => s.noteSel.includes(n.id));
+    if (sel.length) caret = Math.max(...sel.map((n) => n.start + n.dur));
+    else if (s.timeSel) caret = s.timeSel.from;
+    else if (s.playhead > 0) caret = Math.round(s.playhead / T16) * T16;
+    else caret = placeDrawings(p).find((x) => s.selection.kind === 'drawing' && x.drawing.id === s.selection.id)?.startTick ?? 0;
+  }
+  caret = Math.max(0, Math.min(periodEnd(p) - T16, caret));
+  if (s.recording) set({ recording: false });
+  set({ noteInput: { caret, last: [] }, focusPane: 'staff' });
+  ensureVisible(caret);
+}
+
+export function stopNoteInput() {
+  set({ noteInput: null });
+}
+
+export function toggleNoteInput() {
+  if (get().noteInput) stopNoteInput();
+  else {
+    startNoteInput();
+    toast('Note input: type A–G · 3–7 durations · . dot · 0 rest · Enter tie · Esc to finish');
+  }
+}
+
+export function setCaret(tick: number) {
+  const s = get();
+  if (!s.noteInput) return;
+  const caret = Math.max(0, Math.min(periodEnd(), Math.round(tick)));
+  set({ noteInput: { caret, last: [] } });
+  ensureVisible(caret);
+}
+
+function lastPitchBefore(notes: Note[], tick: number): number | undefined {
+  let best: Note | undefined;
+  for (const n of notes) if (n.start < tick && (!best || n.start > best.start || (n.start === best.start && n.pitch > best.pitch))) best = n;
+  return best?.pitch;
+}
+
+/** Enter a note at the caret (or at `at`), overwriting what sounds there, and advance. */
+export function inputPitch(pitch: number, at?: number) {
+  const s = get();
+  const p = currentProject(s);
+  const caret = at ?? s.noteInput?.caret ?? 0;
+  const end = periodEnd(p);
+  if (caret >= end) {
+    toast('End of the period — add a drawing to continue');
+    return;
+  }
+  const dur = Math.min(s.noteLength, end - caret);
+  const note: Note = { id: uid('n'), pitch: Math.max(21, Math.min(108, pitch)), start: caret, dur, vel: 86 };
+  editPeriod((notes) => ({ notes: [...clearRange(notes, caret, caret + dur), note], sel: [note.id] }));
+  set({ noteInput: { caret: Math.min(end, caret + dur), last: [note.id] } });
+  ensureVisible(caret + dur);
+  audition([{ ...note, start: 0, dur: Math.min(dur, TPQ) }]);
+}
+
+/** Type a letter name (0 = C … 6 = B); with `chord`, stack it above the last entered note. */
+export function inputLetter(letter: number, chord = false) {
+  const s = get();
+  if (!s.noteInput) return;
+  const p = currentProject(s);
+  const notes = periodNotes(p);
+  const last = notes.filter((n) => s.noteInput!.last.includes(n.id));
+  if (chord && last.length) {
+    const top = last.reduce((a, b) => (b.pitch > a.pitch ? b : a));
+    addChordNote(top, pitchForLetter(letter, keyFifths(scaleAtTick(p, top.start)), top.pitch, true));
+    return;
+  }
+  const caret = s.noteInput.caret;
+  const near = lastPitchBefore(notes, caret) ?? 71;
+  inputPitch(pitchForLetter(letter, keyFifths(scaleAtTick(p, caret)), near));
+}
+
+/** Add an interval above the last entered note (2 = second … 8 = octave). */
+export function inputInterval(interval: number) {
+  const s = get();
+  if (!s.noteInput) return;
+  const p = currentProject(s);
+  const last = periodNotes(p).filter((n) => s.noteInput!.last.includes(n.id));
+  if (!last.length) return;
+  const top = last.reduce((a, b) => (b.pitch > a.pitch ? b : a));
+  const moved = transposeDiatonic([top], interval - 1, drawingScaleAt(p, top.start))[0].pitch;
+  addChordNote(top, moved);
+}
+
+function addChordNote(base: Note, pitch: number) {
+  const s = get();
+  const note: Note = { id: uid('n'), pitch, start: base.start, dur: base.dur, vel: base.vel };
+  editPeriod((notes) => ({ notes: [...notes, note], sel: [...(s.noteInput?.last ?? []), note.id] }));
+  set({ noteInput: { caret: s.noteInput?.caret ?? base.start + base.dur, last: [...(s.noteInput?.last ?? []), note.id] } });
+  audition([{ ...note, start: 0, dur: Math.min(note.dur, TPQ) }]);
+}
+
+/** A rest of the current value: clear what sounds there and advance. */
+export function inputRest() {
+  const s = get();
+  if (!s.noteInput) return;
+  const end = periodEnd();
+  const caret = s.noteInput.caret;
+  const dur = Math.min(s.noteLength, end - caret);
+  if (dur <= 0) {
+    toast('End of the period — add a drawing to continue');
+    return;
+  }
+  editPeriod((notes) => ({ notes: clearRange(notes, caret, caret + dur), sel: [] }));
+  set({ noteInput: { caret: Math.min(end, caret + dur), last: [] } });
+}
+
+/** Tie: lengthen the last entered note(s) by the current value. */
+export function inputTie() {
+  const s = get();
+  if (!s.noteInput) return;
+  const ids = new Set(s.noteInput.last);
+  const caret = s.noteInput.caret;
+  const last = periodNotes().filter((n) => ids.has(n.id));
+  if (!last.length || last.some((n) => n.start + n.dur !== caret)) {
+    toast('Enter a note first — Enter ties it to a note of the current value');
+    return;
+  }
+  const end = periodEnd();
+  const add = Math.min(s.noteLength, end - caret);
+  if (add <= 0) {
+    toast('End of the period — nothing left to tie into');
+    return;
+  }
+  editPeriod((notes) => clearRange(notes, caret, caret + add, ids).map((n) => (ids.has(n.id) ? { ...n, dur: n.dur + add } : n)));
+  set({ noteInput: { caret: Math.min(end, caret + add), last: [...ids] } });
+}
+
+/** Delete the note before the caret and step back. */
+export function inputBackspace() {
+  const s = get();
+  if (!s.noteInput) return;
+  const caret = s.noteInput.caret;
+  const before = periodNotes().filter((n) => n.start < caret);
+  if (!before.length) return;
+  const at = Math.max(...before.map((n) => n.start));
+  const gone = new Set(before.filter((n) => n.start === at).map((n) => n.id));
+  editPeriod((notes) => ({ notes: notes.filter((n) => !gone.has(n.id)), sel: [] }));
+  set({ noteInput: { caret: at, last: [] } });
+}
+
+/** Repeat the last entered note or chord at the caret (Sibelius R). */
+export function inputRepeat() {
+  const s = get();
+  if (!s.noteInput) return;
+  const last = periodNotes().filter((n) => s.noteInput!.last.includes(n.id));
+  if (!last.length) return;
+  const caret = s.noteInput.caret;
+  const end = periodEnd();
+  const dur = Math.min(Math.max(...last.map((n) => n.dur)), end - caret);
+  if (dur <= 0) return;
+  const copies = last.map((n) => ({ ...n, id: uid('n'), start: caret, dur, slur: undefined }));
+  editPeriod((notes) => ({ notes: [...clearRange(notes, caret, caret + dur), ...copies], sel: copies.map((n) => n.id) }));
+  set({ noteInput: { caret: Math.min(end, caret + dur), last: copies.map((n) => n.id) } });
+  audition(copies.map((n) => ({ ...n, start: 0, dur: Math.min(n.dur, TPQ) })));
+}
+
+/** Move the caret to the previous/next onset (or bar with `byBar`). */
+export function moveCaret(dir: 1 | -1, byBar = false) {
+  const s = get();
+  if (!s.noteInput) return;
+  const p = currentProject(s);
+  const caret = s.noteInput.caret;
+  let next: number;
+  if (byBar) {
+    const bt = barTicks(p.meter);
+    next = dir > 0 ? (Math.floor(caret / bt) + 1) * bt : Math.ceil(caret / bt - 1) * bt;
+  } else {
+    const onsets = Array.from(new Set(periodNotes(p).flatMap((n) => [n.start, n.start + n.dur]))).sort((a, b) => a - b);
+    const found = dir > 0 ? onsets.find((t) => t > caret) : [...onsets].reverse().find((t) => t < caret);
+    next = found ?? caret + dir * s.noteLength;
+  }
+  setCaret(next);
 }
 
 // ---------------------------------------------------------------------------
@@ -577,12 +1210,38 @@ export function setCadence(drawingId: string, type: CadenceType) {
   setDrawingProp(drawingId, { cadence: type });
 }
 
+/** Keep the modulation map covering the whole period after its length changes. */
+function fitRegions(p: Project, oldTotal: number) {
+  const total = totalBars(p);
+  if (total === oldTotal) return;
+  p.regions = p.regions.filter((r) => r.start < total);
+  if (!p.regions.length) p.regions = [{ id: uid('r'), start: 0, end: total, scale: p.key }];
+  for (const r of p.regions) if (r.end >= oldTotal || r.end > total) r.end = total;
+}
+
 export function setDrawingBars(drawingId: string, bars: number) {
   editProject((p) => {
     const d = p.drawings.find((x) => x.id === drawingId);
     if (!d || d.bars === bars) return;
+    const old = totalBars(p);
     d.notes = scaleTime(d.notes, bars / d.bars);
     d.bars = bars;
+    fitRegions(p, old);
+  });
+}
+
+/** Lengthen or shorten a drawing without changing its rhythm (bars are added or cut at the end). */
+export function resizeDrawing(drawingId: string, bars: number) {
+  const b = Math.max(1, Math.min(32, Math.round(bars)));
+  editProject((p) => {
+    const d = p.drawings.find((x) => x.id === drawingId);
+    if (!d || d.bars === b) return;
+    const old = totalBars(p);
+    const len = b * barTicks(p.meter);
+    d.notes = d.notes.filter((n) => n.start < len).map((n) => ({ ...n, dur: Math.min(n.dur, len - n.start) }));
+    d.bars = b;
+    fitRegions(p, old);
+    p.steps = stepsFor(p);
   });
 }
 
@@ -618,8 +1277,10 @@ export function addDrawing(afterId?: string) {
     transform: 'none',
   };
   editProject((draft) => {
+    const old = totalBars(draft);
     const idx = after ? draft.drawings.findIndex((x) => x.id === after.id) + 1 : draft.drawings.length;
     draft.drawings.splice(idx, 0, d);
+    fitRegions(draft, old);
     draft.steps = stepsFor(draft);
   });
   select({ kind: 'drawing', id: d.id });
@@ -632,7 +1293,9 @@ export function addMember() {
   const letter = 'ABCDEFGH'.split('').find((l) => !keys.has(l)) ?? `M${keys.size + 1}`;
   const d: Drawing = { id: uid('d'), label: `${letter}1`, member: letter, bars: 2, notes: [], cadence: 'half', scale: p.key, transform: 'none' };
   editProject((draft) => {
+    const old = totalBars(draft);
     draft.drawings.push(d);
+    fitRegions(draft, old);
     draft.steps = stepsFor(draft);
   });
   select({ kind: 'drawing', id: d.id });
@@ -646,7 +1309,9 @@ export function deleteDrawing(id: string) {
     return;
   }
   editProject((draft) => {
+    const old = totalBars(draft);
     draft.drawings = draft.drawings.filter((d) => d.id !== id);
+    fitRegions(draft, old);
     draft.steps = stepsFor(draft);
   });
   fixSelection();
@@ -700,6 +1365,10 @@ export function setMeter(meter: Meter) {
       d.notes = d.notes.filter((n) => n.start < len).map((n) => ({ ...n, dur: Math.min(n.dur, len - n.start) }));
     }
     draft.meter = meter;
+    const bars = totalBars(draft);
+    for (const r of draft.regions) r.end = Math.min(r.end, bars);
+    draft.regions = draft.regions.filter((r) => r.start < bars);
+    if (draft.regions.length) draft.regions[draft.regions.length - 1].end = bars;
     draft.steps = stepsFor(draft);
   });
 }
@@ -912,7 +1581,7 @@ export function deleteProject(id: string) {
 
 export function resetDemo() {
   const projects = recentProjects();
-  set({ projects, library: motifLibrary(), archived: [], past: [], future: [] });
+  set({ projects, library: motifLibrary(), archived: [], past: [], future: [], clipboard: null });
   openProject(projects[0].id);
   persist();
 }
@@ -930,7 +1599,9 @@ export { demoProject };
 // Transport
 
 export function playEvents(p: Project): PlayEvent[] {
-  const ev: PlayEvent[] = absoluteNotes(p).map((n) => ({ pitch: n.pitch, start: n.abs, dur: n.art === 'staccato' ? n.dur * 0.5 : n.dur, vel: n.vel }));
+  const ev: PlayEvent[] = absoluteNotes(p)
+    .filter((n) => !n.mute)
+    .map((n) => ({ pitch: n.pitch, start: n.abs, dur: n.art === 'staccato' ? n.dur * 0.5 : n.dur, vel: n.vel }));
   for (const n of p.lowerVoice ?? []) ev.push({ pitch: n.pitch, start: n.start, dur: n.dur, vel: n.vel, soft: true });
   return ev;
 }
@@ -945,6 +1616,7 @@ function tick() {
 export function loopRange(s: AppState = get()): { from: number; to: number } {
   const p = currentProject(s);
   const bt = barTicks(p.meter);
+  if (s.timeSel && s.timeSel.to > s.timeSel.from) return s.timeSel;
   if (s.selection.kind === 'drawing') {
     const id = s.selection.id;
     const pl = placeDrawings(p).find((x) => x.drawing.id === id);

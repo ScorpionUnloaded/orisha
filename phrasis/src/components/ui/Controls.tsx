@@ -179,41 +179,139 @@ export type MenuItem =
   | { title: string }
   | 'sep';
 
-export function MenuButton({ items, label = 'More', size = 20, align = 'right' }: { items: MenuItem[]; label?: string; size?: number; align?: 'left' | 'right' }) {
+/** The items of a menu; `onDone` closes the surrounding popover. */
+export function MenuList({ items, onDone }: { items: MenuItem[]; onDone: () => void }) {
+  return (
+    <div role="menu">
+      {items.map((it, i) => {
+        if (it === 'sep') return <div key={i} className="pop-sep" />;
+        if ('title' in it) return <div key={i} className="pop-title">{it.title}</div>;
+        return (
+          <button
+            key={i}
+            type="button"
+            role="menuitem"
+            disabled={it.disabled}
+            className={`pop-item ${it.danger ? 'danger' : ''}`}
+            style={it.disabled ? { opacity: 0.4, pointerEvents: 'none' } : undefined}
+            onClick={() => {
+              onDone();
+              it.onSelect();
+            }}
+          >
+            <span className="check">{it.checked ? '✓' : ''}</span>
+            {it.label}
+            {it.hint && <span className="kbd">{it.hint}</span>}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function MenuButton({
+  items,
+  label = 'More',
+  size = 20,
+  align = 'right',
+  icon,
+  className,
+  title,
+}: {
+  items: MenuItem[];
+  label?: string;
+  size?: number;
+  align?: 'left' | 'right';
+  icon?: ReactNode;
+  className?: string;
+  title?: string;
+}) {
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
   return (
     <>
-      <button ref={btn} type="button" className="icon-btn" aria-label={label} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-        <More size={size} />
+      <button ref={btn} type="button" className={className ?? 'icon-btn'} aria-label={label} title={title} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+        {icon ?? <More size={size} />}
       </button>
       <Popover anchor={btn.current} open={open} onClose={() => setOpen(false)} align={align} minWidth={200}>
-        <div role="menu">
-          {items.map((it, i) => {
-            if (it === 'sep') return <div key={i} className="pop-sep" />;
-            if ('title' in it) return <div key={i} className="pop-title">{it.title}</div>;
-            return (
-              <button
-                key={i}
-                type="button"
-                role="menuitem"
-                disabled={it.disabled}
-                className={`pop-item ${it.danger ? 'danger' : ''}`}
-                style={it.disabled ? { opacity: 0.4, pointerEvents: 'none' } : undefined}
-                onClick={() => {
-                  setOpen(false);
-                  it.onSelect();
-                }}
-              >
-                <span className="check">{it.checked ? '✓' : ''}</span>
-                {it.label}
-                {it.hint && <span className="kbd">{it.hint}</span>}
-              </button>
-            );
-          })}
-        </div>
+        <MenuList items={items} onDone={() => setOpen(false)} />
       </Popover>
     </>
+  );
+}
+
+/**
+ * Right-click menus: `open(event, items)` shows a menu at the pointer;
+ * render `node` somewhere in the component.
+ */
+export function useContextMenu(): { open: (at: { x: number; y: number }, items: MenuItem[]) => void; node: ReactNode } {
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuItem[] } | null>(null);
+  const ref = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+  useLayoutEffect(() => {
+    if (!menu) return;
+    const el = ref.current;
+    const w = el?.offsetWidth ?? 220;
+    const h = el?.offsetHeight ?? 300;
+    setPos({
+      left: Math.max(8, Math.min(window.innerWidth - w - 8, menu.x)),
+      top: menu.y + h > window.innerHeight - 8 ? Math.max(8, menu.y - h) : menu.y,
+    });
+  }, [menu]);
+  useEffect(() => {
+    if (!menu) return;
+    const close = (e: Event) => {
+      if (e.type === 'pointerdown' && ref.current?.contains(e.target as Node)) return;
+      if (e instanceof KeyboardEvent && e.key !== 'Escape') return;
+      if (e instanceof KeyboardEvent) e.stopPropagation();
+      setMenu(null);
+    };
+    window.addEventListener('pointerdown', close, true);
+    window.addEventListener('keydown', close, true);
+    window.addEventListener('blur', close);
+    return () => {
+      window.removeEventListener('pointerdown', close, true);
+      window.removeEventListener('keydown', close, true);
+      window.removeEventListener('blur', close);
+    };
+  }, [menu]);
+  const node = menu
+    ? createPortal(
+        <div ref={ref} className="pop context" style={{ left: pos?.left ?? -9999, top: pos?.top ?? -9999, minWidth: 220 }} role="presentation" onContextMenu={(e) => e.preventDefault()}>
+          <MenuList items={menu.items} onDone={() => setMenu(null)} />
+        </div>,
+        document.body,
+      )
+    : null;
+  return {
+    open: (at, items) => {
+      setPos(null);
+      setMenu({ x: at.x, y: at.y, items });
+    },
+    node,
+  };
+}
+
+/** Square toolbar button (tool pickers, toggles). */
+export function ToolButton({
+  on,
+  onClick,
+  title,
+  children,
+  className,
+  disabled,
+}: {
+  on?: boolean;
+  onClick: () => void;
+  title: string;
+  children: ReactNode;
+  className?: string;
+  disabled?: boolean;
+}) {
+  return (
+    <button type="button" className={`tbtn ${on ? 'on' : ''} ${className ?? ''}`} onClick={onClick} title={title} aria-label={title} aria-pressed={on} disabled={disabled}>
+      {children}
+    </button>
   );
 }
 

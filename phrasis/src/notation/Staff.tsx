@@ -53,7 +53,15 @@ export function renderPrims(prims: Prim[], sp: number, onNoteDown?: StaffProps['
   });
 }
 
-export function useEngraving(notes: Note[], opts: EngraveOptions, geo: StaffGeometry, xOf: XMap | undefined, classOf?: StaffProps['classOf'], spacing: 'axis' | 'barwise' = 'axis') {
+/** Engraved staff plus the tick → x mapping it was laid out with (for overlays and hit-testing). */
+export function useEngraving(
+  notes: Note[],
+  opts: EngraveOptions,
+  geo: StaffGeometry,
+  xOf: XMap | undefined,
+  classOf?: StaffProps['classOf'],
+  spacing: 'axis' | 'barwise' = 'axis',
+): Engraved & { map: XMap } {
   return useMemo(() => {
     const bars = buildBars(notes, opts);
     const pre = geo.showClef === false && geo.showKey === false && geo.showTime === false ? 0 : preludeWidth(opts.clef, opts.fifths, geo.sp, geo.showKey !== false, geo.showTime !== false);
@@ -62,7 +70,7 @@ export function useEngraving(notes: Note[], opts: EngraveOptions, geo: StaffGeom
         ? barwiseMapping(bars, xOf, geo.sp)
         : xOf
       : compactMapping(bars, geo.preludeX + pre + geo.sp * 0.4, geo.right - (geo.preludeX + pre + geo.sp * 0.4), geo.sp);
-    return engrave(bars, opts, geo, map, classOf);
+    return { ...engrave(bars, opts, geo, map, classOf), map };
   }, [notes, opts, geo, xOf, classOf, spacing]);
 }
 

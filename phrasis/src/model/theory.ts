@@ -208,6 +208,31 @@ export function romanDegree(pitch: number, scale: ScaleRef): string {
 
 export const isBlackKey = (pitch: number) => [1, 3, 6, 8, 10].includes(mod(pitch, 12));
 
+/** Pitch of an absolute diatonic index (C4 = 28) with the key signature's alteration. */
+export function pitchOfDiatonic(di: number, fifths: number): number {
+  const letter = mod(di, 7);
+  const octave = Math.floor(di / 7);
+  return (octave + 1) * 12 + LETTER_PC[letter] + keySignatureAlters(fifths)[letter];
+}
+
+/**
+ * The pitch a letter name (0 = C … 6 = B) stands for in a key, in the octave
+ * closest to `near` — how notation programs pick the register of typed notes.
+ * With `above`, the nearest pitch strictly above `near` (adding a chord note).
+ */
+export function pitchForLetter(letter: number, fifths: number, near: number, above = false): number {
+  const alter = keySignatureAlters(fifths)[letter];
+  let best = NaN;
+  for (let octave = -1; octave <= 9; octave++) {
+    const p = (octave + 1) * 12 + LETTER_PC[letter] + alter;
+    if (p < 0 || p > 127) continue;
+    if (above) {
+      if (p > near && (Number.isNaN(best) || p < best)) best = p;
+    } else if (Number.isNaN(best) || Math.abs(p - near) < Math.abs(best - near) || (Math.abs(p - near) === Math.abs(best - near) && p > best)) best = p;
+  }
+  return best;
+}
+
 /** All 24 major/minor keys for the key selector, ordered by tonic. */
 export function keyOptions(): ScaleRef[] {
   const out: ScaleRef[] = [];

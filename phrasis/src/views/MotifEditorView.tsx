@@ -37,6 +37,7 @@ import {
   useApp,
   useProject,
 } from '../store/store';
+import type { AppState } from '../store/store';
 
 function useMotif(): Motif {
   const library = useApp((s) => s.library);
@@ -164,7 +165,17 @@ function EditorArea({ motif, width, height, previewNotes }: { motif: Motif; widt
           const moved = motif.notes.filter((n) => set.has(n.id)).map((n) => ({ ...n, id: copy ? uid('n') : n.id, start: Math.max(0, n.start + dT), pitch: q(n.pitch + dP) }));
           setMotifNotes(motif.id, copy ? [...motif.notes, ...moved] : [...motif.notes.filter((n) => !set.has(n.id)), ...moved]);
         }}
-        onResize={(ids, dD) => setMotifNotes(motif.id, motif.notes.map((n) => (ids.includes(n.id) ? { ...n, dur: Math.max(T16, n.dur + dD) } : n)))}
+        onResize={(ids, dD, edge) =>
+          setMotifNotes(
+            motif.id,
+            motif.notes.map((n) => {
+              if (!ids.includes(n.id)) return n;
+              if (edge === 'end') return { ...n, dur: Math.max(T16 / 2, n.dur + dD) };
+              const start = Math.max(0, Math.min(n.start + n.dur - T16 / 2, n.start + dD));
+              return { ...n, start, dur: n.start + n.dur - start };
+            }),
+          )
+        }
       >
         {motif.bars < bars ? <rect x={axis.xOf(motif.bars * bt)} y={top} width={axis.x1 - axis.xOf(motif.bars * bt)} height={gridH} fill="rgba(0,0,0,0.035)" pointerEvents="none" /> : null}
       </PianoRoll>
@@ -200,7 +211,7 @@ export function MotifEditorView() {
   const listed = library.filter((m) => matchesFilter(m, filter));
   const idx = listed.findIndex((m) => m.id === motif.id);
 
-  const tools: Array<{ id: RollTool; icon: ReactNode; label: string }> = [
+  const tools: Array<{ id: AppState['motifTool']; icon: ReactNode; label: string }> = [
     { id: 'draw', icon: <Pencil />, label: 'Draw' },
     { id: 'erase', icon: <Eraser />, label: 'Erase' },
     { id: 'select', icon: <Marquee />, label: 'Select' },

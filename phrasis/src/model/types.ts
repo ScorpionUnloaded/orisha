@@ -30,6 +30,8 @@ export interface Note {
   art?: Articulation;
   /** Phrasing slur boundaries. */
   slur?: 'start' | 'end';
+  /** Muted notes stay in the score (greyed) but are not played or exported. */
+  mute?: boolean;
 }
 
 export type ModeId =

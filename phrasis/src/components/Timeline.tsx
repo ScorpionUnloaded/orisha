@@ -1,9 +1,9 @@
 /** Shared time axis and syntax overlays for every time-aligned editor. */
-import { useMemo } from 'react';
-import type { ReactElement } from 'react';
-import { barTicks, CADENCES, cadencePoints, placeDrawings } from '../model/syntax';
+import { useMemo, useRef, useState } from 'react';
+import type { PointerEvent as ReactPointerEvent, ReactElement } from 'react';
+import { barTicks, beatTicks, CADENCES, cadencePoints, placeDrawings } from '../model/syntax';
 import type { Project } from '../model/types';
-import { select, seek, useApp } from '../store/store';
+import { select, seek, selectTimeRange, setTimeSel, useApp } from '../store/store';
 
 export interface Axis {
   x0: number;
@@ -13,6 +13,7 @@ export interface Axis {
   startBar: number;
   bars: number;
   barLen: number;
+  beatLen: number;
   xOf: (tick: number) => number;
   tickOf: (x: number) => number;
 }
@@ -23,6 +24,7 @@ export const RIGHT_PAD = 18;
 export function useAxis(project: Project, width: number, win: { start: number; bars: number }, gutter = GUTTER, rightPad = RIGHT_PAD): Axis {
   return useMemo(() => {
     const barLen = barTicks(project.meter);
+    const beatLen = beatTicks(project.meter);
     const startTick = win.start * barLen;
     const endTick = (win.start + win.bars) * barLen;
     const x0 = gutter;
@@ -36,6 +38,7 @@ export function useAxis(project: Project, width: number, win: { start: number; b
       startBar: win.start,
       bars: win.bars,
       barLen,
+      beatLen,
       xOf: (t: number) => x0 + (t - startTick) * k,
       tickOf: (x: number) => startTick + (x - x0) / k,
     };
@@ -92,6 +95,7 @@ export function SyntaxBrackets({ project, axis, y, bottom, prefix, cadenceLabel 
         <g
           key={`br${pl.drawing.id}`}
           style={{ cursor: 'pointer' }}
+          onPointerDown={(e) => e.stopPropagation()}
           onClick={() => select({ kind: 'drawing', id: pl.drawing.id })}
         >
           <path d={`M${xa},${y + tick} V${y} H${xb} V${y + tick}`} className={`bracket ${sel ? 'sel' : ''}`} />
@@ -152,6 +156,98 @@ export function Playhead({ axis, top, bottom }: { axis: Axis; top: number; botto
     <g pointerEvents="none">
       <line x1={x} x2={x} y1={top} y2={bottom} className="playhead" stroke={recording ? '#e5484d' : undefined} />
       <path d={`M${x - 4},${top - 5} h8 l-4,5 z`} fill={recording ? '#e5484d' : '#1e1e1e'} />
+    </g>
+  );
+}
+
+/** The ruler's time selection, shaded across an editor. */
+export function TimeSelBand({ axis, top, bottom }: { axis: Axis; top: number; bottom: number }) {
+  const sel = useApp((s) => s.timeSel);
+  if (!sel || sel.to <= axis.startTick || sel.from >= axis.endTick) return null;
+  const xa = Math.max(axis.x0, axis.xOf(sel.from));
+  const xb = Math.min(axis.x1, axis.xOf(sel.to));
+  return <rect x={xa} y={top} width={Math.max(0, xb - xa)} height={bottom - top} className="time-sel" pointerEvents="none" />;
+}
+
+/**
+ * Bar/beat ruler. Click to move the playhead; drag to make a time selection
+ * (which selects the notes inside it and becomes the loop range); double-click clears it.
+ */
+export function TimeRuler({ axis, y, height = 16, snap }: { axis: Axis; y: number; height?: number; snap: number }) {
+  const sel = useApp((s) => s.timeSel);
+  const [drag, setDrag] = useState<{ from: number; to: number; x0: number } | null>(null);
+  const rect = useRef<DOMRect | null>(null);
+  const tickAt = (e: ReactPointerEvent) => {
+    const x = e.clientX - rect.current!.left;
+    const t = axis.tickOf(Math.max(axis.x0, Math.min(axis.x1, x)));
+    const g = e.altKey ? 1 : snap;
+    return Math.round(t / g) * g;
+  };
+  const marks: ReactElement[] = [];
+  const beatPx = axis.xOf(axis.startTick + axis.beatLen) - axis.x0;
+  for (let t = axis.startTick; t <= axis.endTick; t += axis.beatLen) {
+    const x = axis.xOf(t);
+    const isBar = Math.abs(t % axis.barLen) < 1;
+    if (!isBar && beatPx < 6) continue;
+    marks.push(<line key={t} x1={x} x2={x} y1={isBar ? y : y + height * 0.55} y2={y + height} className="ruler-tick" />);
+    if (isBar) {
+      const bar = Math.round(t / axis.barLen);
+      if (t < axis.endTick)
+        marks.push(
+          <text key={`b${t}`} x={x + 4} y={y + height - 4} className="ruler-num">
+            {bar + 1}
+          </text>,
+        );
+    } else if (beatPx > 34) {
+      const bar = Math.floor(t / axis.barLen);
+      const beat = Math.round((t - bar * axis.barLen) / axis.beatLen) + 1;
+      marks.push(
+        <text key={`t${t}`} x={x + 3} y={y + height - 4} className="ruler-num beat">
+          {`${bar + 1}.${beat}`}
+        </text>,
+      );
+    }
+  }
+  const shown = drag ? { from: Math.min(drag.from, drag.to), to: Math.max(drag.from, drag.to) } : sel;
+  return (
+    <g
+      className="ruler"
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        const svg = (e.currentTarget as SVGGElement).ownerSVGElement!;
+        rect.current = svg.getBoundingClientRect();
+        (e.currentTarget as Element).setPointerCapture(e.pointerId);
+        const t = tickAt(e);
+        setDrag({ from: t, to: t, x0: e.clientX });
+      }}
+      onPointerMove={(e) => {
+        if (drag) setDrag({ ...drag, to: tickAt(e) });
+      }}
+      onPointerUp={(e) => {
+        if (!drag) return;
+        const to = tickAt(e);
+        if (Math.abs(e.clientX - drag.x0) < 4) {
+          seek(axis.tickOf(Math.max(axis.x0, e.clientX - rect.current!.left)));
+        } else {
+          setTimeSel({ from: drag.from, to });
+          selectTimeRange(drag.from, to, e.shiftKey);
+        }
+        setDrag(null);
+      }}
+      onDoubleClick={() => setTimeSel(null)}
+    >
+      <rect x={axis.x0} y={y} width={axis.x1 - axis.x0} height={height} className="ruler-bg" />
+      {shown && shown.to > axis.startTick && shown.from < axis.endTick && (
+        <rect
+          x={Math.max(axis.x0, axis.xOf(shown.from))}
+          y={y}
+          width={Math.max(0, Math.min(axis.x1, axis.xOf(shown.to)) - Math.max(axis.x0, axis.xOf(shown.from)))}
+          height={height}
+          className="ruler-sel"
+        />
+      )}
+      {marks}
+      <title>Click to move the playhead · drag to select time (loop range) · double-click to clear</title>
     </g>
   );
 }

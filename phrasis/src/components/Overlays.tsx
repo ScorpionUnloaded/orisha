@@ -8,9 +8,16 @@ import type { Meter, ScaleRef } from '../model/types';
 import { generateVariations } from '../model/variations';
 import type { GenerateOptions } from '../model/variations';
 import { MiniStaff } from '../notation/Staff';
-import { SHORTCUTS } from '../shortcuts';
-import { audition, createProject, setDrawingNotes, setUi, useApp, useProject } from '../store/store';
-import { EditableText, Select, Slider, Toggle } from './ui/Controls';
+import { arpeggiate, chop, limitRange, quantizeNotes, randomize, strum, transpose, velocities } from '../model/editing';
+import type { ArpPattern, VelocityOp } from '../model/editing';
+import { prettyPitch } from '../model/theory';
+import { T16, T8, TPQ } from '../model/types';
+import { SHORTCUT_SECTIONS } from '../shortcuts';
+import { audition, createProject, currentProject, runTool, scaleAtFor, selectedDrawing, setDrawingNotes, setUi, targetIds, useApp, useProject } from '../store/store';
+import type { NoteToolId } from '../store/store';
+import { snapLabel, snapOptions } from './EditTools';
+import { NoteEditor } from './inspector/NoteEditor';
+import { EditableText, Segmented, Select, Slider, Toggle } from './ui/Controls';
 import { Close, PlayIcon } from './ui/Icons';
 
 export function Toasts() {
@@ -202,16 +209,288 @@ function NewProjectModal({ template: initial }: { template: TemplateId }) {
 
 function ShortcutsModal() {
   return (
-    <ModalFrame narrow title="Keyboard shortcuts">
-      <div className="modal-body" style={{ display: 'grid', gridTemplateColumns: 'auto 1fr', gap: '10px 16px', fontSize: 13.5 }}>
-        {SHORTCUTS.map(([k, v]) => (
-          <div key={k} style={{ display: 'contents' }}>
-            <span>
-              <kbd>{k}</kbd>
-            </span>
-            <span style={{ color: 'var(--text-2)' }}>{v}</span>
-          </div>
+    <ModalFrame title="Keyboard shortcuts">
+      <div className="modal-body shortcut-grid">
+        {SHORTCUT_SECTIONS.map((sec) => (
+          <section key={sec.title}>
+            <div className="insp-caps">{sec.title}</div>
+            <div className="shortcut-list">
+              {sec.items.map(([k, v]) => (
+                <div key={k} style={{ display: 'contents' }}>
+                  <span>
+                    <kbd>{k}</kbd>
+                  </span>
+                  <span style={{ color: 'var(--text-2)' }}>{v}</span>
+                </div>
+              ))}
+            </div>
+          </section>
         ))}
+      </div>
+    </ModalFrame>
+  );
+}
+
+function NotePropsModal() {
+  const count = useApp((s) => s.noteSel.length);
+  return (
+    <ModalFrame narrow title="Note properties" footer={<button type="button" className="btn primary" onClick={() => setUi({ modal: null })}>Done</button>}>
+      <div className="modal-body">{count ? <NoteEditor /> : <p style={{ color: 'var(--text-3)' }}>No notes selected.</p>}</div>
+    </ModalFrame>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Note tools with parameters (FL-style tool dialogs)
+
+const TOOL_TITLE: Record<NoteToolId, string> = {
+  quantize: 'Quantize',
+  randomize: 'Randomize / humanize',
+  strum: 'Strum',
+  arpeggiate: 'Arpeggiate',
+  velocity: 'Velocity',
+  limit: 'Limit to range',
+  transpose: 'Transpose',
+  chop: 'Chop',
+};
+
+const PITCH_CHOICES = Array.from({ length: 61 }, (_, i) => 36 + i);
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="row">
+      <span>{label}</span>
+      <div style={{ minWidth: 0 }}>{children}</div>
+    </div>
+  );
+}
+
+function NoteToolModal({ tool }: { tool: NoteToolId }) {
+  const s = useApp.getState();
+  const project = useProject();
+  const meter = project.meter;
+  const [grid, setGrid] = useState(Math.max(T16 / 2, s.snap));
+  const [strength, setStrength] = useState(1);
+  const [ends, setEnds] = useState(true);
+  const [step, setStep] = useState(tool === 'strum' ? 30 : T16);
+  const [dir, setDir] = useState<'up' | 'down'>('up');
+  const [pattern, setPattern] = useState<ArpPattern>('up');
+  const [velMode, setVelMode] = useState<VelocityOp['kind']>('ramp');
+  const [velA, setVelA] = useState(56);
+  const [velB, setVelB] = useState(110);
+  const [lo, setLo] = useState(60);
+  const [hi, setHi] = useState(79);
+  const [rv, setRv] = useState(12);
+  const [rt, setRt] = useState(15);
+  const [rp, setRp] = useState(0);
+  const [amount, setAmount] = useState(2);
+  const [mode, setMode] = useState<'diatonic' | 'chromatic'>('diatonic');
+  const ids = targetIds(s);
+  const drawing = selectedDrawing(s);
+  const scope = s.noteSel.length ? `${ids.length} selected note${ids.length === 1 ? '' : 's'}` : drawing ? `all ${ids.length} notes of drawing ${drawing.label}` : 'no notes';
+  const grids = snapOptions(meter).filter((o) => o.value > 1);
+  const apply = () => {
+    const p = currentProject();
+    switch (tool) {
+      case 'quantize':
+        runTool((n, x) => quantizeNotes(n, x, grid, { ends, strength }), `Quantized to ${snapLabel(grid, meter)}`);
+        break;
+      case 'chop':
+        runTool((n, x) => chop(n, x, grid), 'Chopped');
+        break;
+      case 'strum':
+        runTool((n, x) => strum(n, x, step, dir), 'Strummed');
+        break;
+      case 'arpeggiate':
+        runTool((n, x) => arpeggiate(n, x, step, pattern), 'Arpeggiated');
+        break;
+      case 'velocity': {
+        const op: VelocityOp = velMode === 'set' ? { kind: 'set', value: velA } : velMode === 'scale' ? { kind: 'scale', factor: velA / 100 } : velMode === 'add' ? { kind: 'add', delta: velA - 64 } : { kind: 'ramp', from: velA, to: velB };
+        runTool((n, x) => velocities(n, x, op), 'Velocities changed');
+        break;
+      }
+      case 'limit':
+        runTool((n, x) => limitRange(n, x, lo, hi), 'Limited to range');
+        break;
+      case 'randomize':
+        runTool((n, x) => randomize(n, x, { velocity: rv, timing: rt, pitch: rp, scaleAt: scaleAtFor(p) }, Date.now() & 0xffffff), 'Randomized');
+        break;
+      case 'transpose':
+        runTool((n, x) => transpose(n, x, amount, mode, scaleAtFor(p)), `Transposed ${amount > 0 ? '+' : ''}${amount}`);
+        break;
+    }
+    setUi({ modal: null });
+  };
+
+  let body: ReactNode = null;
+  switch (tool) {
+    case 'quantize':
+    case 'chop':
+      body = (
+        <>
+          <Field label="Grid">
+            <Select value={grid} options={grids} onChange={setGrid} ariaLabel="Grid" />
+          </Field>
+          {tool === 'quantize' && (
+            <>
+              <Field label="Strength">
+                <div className="vel-row">
+                  <Slider value={strength} onChange={setStrength} ariaLabel="Strength" />
+                  <span>{Math.round(strength * 100)}%</span>
+                </div>
+              </Field>
+              <label className="toggle-row">
+                <span>Quantize note ends too</span>
+                <Toggle on={ends} onChange={setEnds} ariaLabel="Quantize ends" />
+              </label>
+            </>
+          )}
+        </>
+      );
+      break;
+    case 'strum':
+    case 'arpeggiate':
+      body = (
+        <>
+          <Field label={tool === 'strum' ? 'Offset per note' : 'Step'}>
+            <Select
+              value={step}
+              options={
+                tool === 'strum'
+                  ? [
+                      { value: 10, label: 'Very tight (10 ticks)' },
+                      { value: 30, label: '1/64' },
+                      { value: 60, label: '1/32' },
+                      { value: T16, label: '1/16' },
+                    ]
+                  : [
+                      { value: T16 / 2, label: '1/32' },
+                      { value: T16, label: '1/16' },
+                      { value: TPQ / 3, label: '1/8 triplet' },
+                      { value: T8, label: '1/8' },
+                      { value: TPQ, label: '1/4' },
+                    ]
+              }
+              onChange={setStep}
+              ariaLabel="Step"
+            />
+          </Field>
+          {tool === 'strum' ? (
+            <Field label="Direction">
+              <Segmented value={dir} onChange={setDir} options={[{ value: 'up', label: 'Up (low first)' }, { value: 'down', label: 'Down' }]} />
+            </Field>
+          ) : (
+            <Field label="Pattern">
+              <Segmented value={pattern} onChange={setPattern} options={[{ value: 'up', label: 'Up' }, { value: 'down', label: 'Down' }, { value: 'updown', label: 'Up–down' }]} />
+            </Field>
+          )}
+          <p className="modal-note">Works on chords — notes that start together.</p>
+        </>
+      );
+      break;
+    case 'velocity':
+      body = (
+        <>
+          <Field label="Mode">
+            <Segmented value={velMode} onChange={setVelMode} options={[{ value: 'ramp', label: 'Ramp' }, { value: 'set', label: 'Set' }, { value: 'scale', label: 'Scale' }, { value: 'add', label: 'Add' }]} />
+          </Field>
+          <Field label={velMode === 'ramp' ? 'From' : velMode === 'scale' ? 'Percent' : velMode === 'add' ? 'Amount' : 'Velocity'}>
+            <div className="vel-row">
+              <Slider value={velA} min={velMode === 'scale' ? 10 : 1} max={velMode === 'scale' ? 200 : 127} step={1} onChange={setVelA} ariaLabel="Value" />
+              <span>{velMode === 'scale' ? `${velA}%` : velMode === 'add' ? `${velA - 64 > 0 ? '+' : ''}${velA - 64}` : velA}</span>
+            </div>
+          </Field>
+          {velMode === 'ramp' && (
+            <Field label="To">
+              <div className="vel-row">
+                <Slider value={velB} min={1} max={127} step={1} onChange={setVelB} ariaLabel="To" />
+                <span>{velB}</span>
+              </div>
+            </Field>
+          )}
+          <p className="modal-note">A ramp from soft to loud is a crescendo; loud to soft a decrescendo.</p>
+        </>
+      );
+      break;
+    case 'limit':
+      body = (
+        <>
+          <Field label="Lowest">
+            <Select value={lo} options={PITCH_CHOICES.map((p) => ({ value: p, label: prettyPitch(p, 0) }))} onChange={setLo} ariaLabel="Lowest" />
+          </Field>
+          <Field label="Highest">
+            <Select value={hi} options={PITCH_CHOICES.map((p) => ({ value: p, label: prettyPitch(p, 0) }))} onChange={setHi} ariaLabel="Highest" />
+          </Field>
+          <p className="modal-note">Notes outside the range are folded in by octaves (at least an octave is kept).</p>
+        </>
+      );
+      break;
+    case 'randomize':
+      body = (
+        <>
+          <Field label="Velocity ±">
+            <div className="vel-row">
+              <Slider value={rv} min={0} max={40} step={1} onChange={setRv} ariaLabel="Velocity amount" />
+              <span>{rv}</span>
+            </div>
+          </Field>
+          <Field label="Timing ±">
+            <div className="vel-row">
+              <Slider value={rt} min={0} max={60} step={1} onChange={setRt} ariaLabel="Timing amount" />
+              <span>{rt}</span>
+            </div>
+          </Field>
+          <Field label="Pitch ± steps">
+            <div className="vel-row">
+              <Slider value={rp} min={0} max={3} step={1} onChange={setRp} ariaLabel="Pitch amount" />
+              <span>{rp}</span>
+            </div>
+          </Field>
+          <p className="modal-note">Timing is in ticks (480 per quarter). Pitch moves stay in the drawing's scale.</p>
+        </>
+      );
+      break;
+    case 'transpose':
+      body = (
+        <>
+          <Field label="Interval">
+            <Segmented value={mode} onChange={setMode} options={[{ value: 'diatonic', label: 'Scale steps' }, { value: 'chromatic', label: 'Semitones' }]} />
+          </Field>
+          <Field label="Amount">
+            <div className="stepper">
+              <button type="button" onClick={() => setAmount((a) => Math.max(-24, a - 1))} aria-label="Less">
+                −
+              </button>
+              <span>{`${amount > 0 ? '+' : ''}${amount}`}</span>
+              <button type="button" onClick={() => setAmount((a) => Math.min(24, a + 1))} aria-label="More">
+                +
+              </button>
+            </div>
+          </Field>
+          <p className="modal-note">{mode === 'diatonic' ? 'Scale steps follow each drawing’s scale (7 steps = an octave).' : '12 semitones = an octave.'}</p>
+        </>
+      );
+      break;
+  }
+
+  return (
+    <ModalFrame
+      narrow
+      title={TOOL_TITLE[tool]}
+      footer={
+        <>
+          <span style={{ marginRight: 'auto', fontSize: 12.5, color: 'var(--text-3)' }}>Applies to {scope}</span>
+          <button type="button" className="btn" onClick={() => setUi({ modal: null })}>
+            Cancel
+          </button>
+          <button type="button" className="btn primary" disabled={!ids.length} onClick={apply}>
+            Apply
+          </button>
+        </>
+      }
+    >
+      <div className="modal-body" style={{ display: 'grid', gap: 4 }}>
+        {body}
       </div>
     </ModalFrame>
   );
@@ -222,6 +501,8 @@ export function Modals() {
   if (!modal) return null;
   if (modal.kind === 'variations') return <VariationsModal drawingId={modal.drawingId} />;
   if (modal.kind === 'new-project') return <NewProjectModal template={modal.template} />;
+  if (modal.kind === 'note-props') return <NotePropsModal />;
+  if (modal.kind === 'note-tool') return <NoteToolModal tool={modal.tool} />;
   return <ShortcutsModal />;
 }
 

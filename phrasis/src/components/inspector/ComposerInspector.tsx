@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { CONTOUR_LABEL, classifyContour, classifyRhythm, classifySymmetry, RHYTHM_LABEL, similarity, SYMMETRY_LABEL, formatPercent } from '../../model/analysis';
 import type { RhythmCharacter, SymmetryKind } from '../../model/analysis';
 import { CADENCES, CADENCE_ORDER, deriveMembers, placeDrawings, totalBars } from '../../model/syntax';
@@ -16,6 +17,7 @@ import {
   setDrawingScale,
   setDrawingSymmetry,
   setDrawingTransform,
+  resizeDrawing,
   setUi,
   setProjectMeta,
   setView,
@@ -27,6 +29,7 @@ import {
 import { EditableText, Popover, Select } from '../ui/Controls';
 import { Close } from '../ui/Icons';
 import { ClosureMeter, InspectorHead, KV, Row } from './Common';
+import { NoteEditor } from './NoteEditor';
 
 function ContourGlyph({ shape }: { shape: ContourShape }) {
   const pts = Array.from({ length: 21 }, (_, i) => {
@@ -119,7 +122,7 @@ function MotifRef({ drawing }: { drawing: Drawing }) {
   );
 }
 
-function DrawingInspector({ drawing }: { drawing: Drawing }) {
+function DrawingInspector({ drawing, extra }: { drawing: Drawing; extra?: ReactNode }) {
   const project = useProject();
   const placed = placeDrawings(project).find((p) => p.drawing.id === drawing.id)!;
   const contour = classifyContour(drawing.notes);
@@ -139,12 +142,24 @@ function DrawingInspector({ drawing }: { drawing: Drawing }) {
           { label: 'Delete drawing', danger: true, onSelect: () => deleteDrawing(drawing.id) },
         ]}
       />
+      {extra}
       <div className="insp-title">Drawing {drawing.label}</div>
       <div className="insp-sub">Melodic unit</div>
       <div style={{ display: 'grid', gap: 6, marginBottom: 14 }}>
         <KV k="Start" v={`Bar ${placed.startBar + 1}`} />
         <KV k="End" v={`Bar ${placed.endBar}`} />
-        <KV k="Duration" v={`${bars} bar${bars === 1 ? '' : 's'}`} />
+        <div className="kv">
+          <span>Duration</span>
+          <span className="stepper inline" title="Add or remove bars at the end of the drawing (the rhythm is kept)">
+            <button type="button" aria-label="One bar shorter" disabled={bars <= 1} onClick={() => resizeDrawing(drawing.id, bars - 1)}>
+              −
+            </button>
+            <span>{`${bars} bar${bars === 1 ? '' : 's'}`}</span>
+            <button type="button" aria-label="One bar longer" onClick={() => resizeDrawing(drawing.id, bars + 1)}>
+              +
+            </button>
+          </span>
+        </div>
       </div>
       <div className="insp-section">
         <div className="insp-label">Contour</div>
@@ -210,7 +225,7 @@ function DrawingInspector({ drawing }: { drawing: Drawing }) {
   );
 }
 
-function MemberInspector({ id }: { id: string }) {
+function MemberInspector({ id, extra }: { id: string; extra?: ReactNode }) {
   const project = useProject();
   const members = deriveMembers(project);
   const idx = members.findIndex((m) => m.id === id);
@@ -227,6 +242,7 @@ function MemberInspector({ id }: { id: string }) {
   return (
     <>
       <InspectorHead menu={[{ label: 'Add drawing to member', onSelect: () => addDrawing(last) }]} />
+      {extra}
       <div className="insp-title">{m.name}</div>
       <div className="insp-sub">Phrase member · {m.drawingIds.length} drawing{m.drawingIds.length > 1 ? 's' : ''}</div>
       <div style={{ display: 'grid', gap: 6, marginBottom: 14 }}>
@@ -263,12 +279,13 @@ function MemberInspector({ id }: { id: string }) {
   );
 }
 
-function PeriodSummary() {
+function PeriodSummary({ extra }: { extra?: ReactNode }) {
   const project = useProject();
   const members = deriveMembers(project);
   return (
     <>
       <InspectorHead />
+      {extra}
       <div className="insp-title">{project.periodName}</div>
       <div className="insp-sub">Phrase architecture</div>
       <div style={{ display: 'grid', gap: 6, marginBottom: 14 }}>
@@ -291,10 +308,17 @@ function PeriodSummary() {
 export function ComposerInspector() {
   const project = useProject();
   const selection = useApp((s) => s.selection);
+  const hasNotes = useApp((s) => s.noteSel.length > 0);
+  // Selected notes come first: they are what the keyboard and the editors act on.
+  const extra = hasNotes ? (
+    <div className="note-section">
+      <NoteEditor />
+    </div>
+  ) : null;
   if (selection.kind === 'drawing') {
     const d = project.drawings.find((x) => x.id === selection.id);
-    if (d) return <DrawingInspector drawing={d} />;
+    if (d) return <DrawingInspector drawing={d} extra={extra} />;
   }
-  if (selection.kind === 'member') return <MemberInspector id={selection.id} />;
-  return <PeriodSummary />;
+  if (selection.kind === 'member') return <MemberInspector id={selection.id} extra={extra} />;
+  return <PeriodSummary extra={extra} />;
 }

@@ -8,7 +8,7 @@
  *                    with other views) or computed from the events (compact)
  *   3. engrave     – glyphs, stems, beams, slurs, ties
  */
-import { diatonicIndex, keySignatureAlters, spellPitch } from '../model/theory';
+import { diatonicIndex, keySignatureAlters, pitchOfDiatonic, spellPitch } from '../model/theory';
 import { T16, TPQ } from '../model/types';
 import type { Articulation, Meter, Note } from '../model/types';
 import { accidentalGlyph, G, M } from './glyphs';
@@ -95,6 +95,25 @@ export function staffPosition(pitch: number, clef: Clef, fifths: number): { pos:
   const di = diatonicIndex(s);
   const bottom = clef === 'bass' ? 18 : 30; // G2 or E4 on the bottom line
   return { pos: di - bottom, alter: s.alter, di };
+}
+
+/** Inverse of staffPosition: the pitch a staff position stands for in a key. */
+export function pitchAtStaffPos(pos: number, clef: Clef, fifths: number): number {
+  return pitchOfDiatonic(pos + (clef === 'bass' ? 18 : 30), fifths);
+}
+
+/** Tick at an x coordinate for any monotonic tick → x mapping (bisection). */
+export function tickAtX(map: XMap, from: number, to: number, x: number): number {
+  let a = from;
+  let b = to;
+  if (x <= map(a)) return a;
+  if (x >= map(b)) return b;
+  for (let i = 0; i < 32 && b - a > 0.5; i++) {
+    const m = (a + b) / 2;
+    if (map(m) < x) a = m;
+    else b = m;
+  }
+  return (a + b) / 2;
 }
 
 export function buildBars(notes: Note[], opts: EngraveOptions): BarData[] {

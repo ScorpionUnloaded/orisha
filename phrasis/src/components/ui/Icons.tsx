@@ -339,3 +339,59 @@ export const TransformIcon = ({ kind }: { kind: string }) => {
       );
   }
 };
+
+// Piano-roll tools
+export const Brush = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M20 4l-9.5 9.5" />
+    <path d="M10.5 13.5c-2.2-.4-4 1-4.3 3.2-.2 1.5-1.2 2.6-2.7 2.8 3.4 1.6 7.6.4 8.3-3.3.2-1-.4-2.1-1.3-2.7z" />
+    <path d="M13 9l2 2" />
+  </svg>
+);
+export const Knife = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M12 3v18" strokeDasharray="2.4 2.2" />
+    <path d="M5 8h4M5 16h4M15 8h4M15 16h4" />
+  </svg>
+);
+export const MuteNote = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <rect x="3.5" y="9" width="17" height="6" rx="1.5" strokeDasharray="2.2 1.8" />
+    <path d="M5 19L19 5" />
+  </svg>
+);
+export const Speaker = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M4 9.5h3.5L12 5.5v13l-4.5-4H4z" />
+    <path d="M15.5 9a4 4 0 0 1 0 6M18 6.5a7.5 7.5 0 0 1 0 11" />
+  </svg>
+);
+export const Wrench = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M14.5 5.2a4.2 4.2 0 0 0-4.9 5.6L4 16.4 7.6 20l5.6-5.6a4.2 4.2 0 0 0 5.6-4.9l-2.6 2.6-2.6-.6-.6-2.6z" />
+  </svg>
+);
+export const Magnet = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M6 4v8a6 6 0 0 0 12 0V4" />
+    <path d="M6 8h3M15 8h3M9 4v8a3 3 0 0 0 6 0V4" />
+  </svg>
+);
+export const FitIcon = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />
+  </svg>
+);
+export const Chord = ({ size = 18, ...p }: P) => (
+  <svg {...base(size, p)}>
+    <rect x="4" y="4" width="11" height="3.6" rx="1" />
+    <rect x="4" y="10.2" width="11" height="3.6" rx="1" />
+    <rect x="4" y="16.4" width="11" height="3.6" rx="1" />
+    <path d="M18.5 5v14" />
+  </svg>
+);
+export const Collapse = ({ size = 14, open, ...p }: P & { open?: boolean }) => (
+  <svg {...base(size, p)}>
+    <path d={open ? 'M6 9l6 6 6-6' : 'M9 6l6 6-6 6'} />
+  </svg>
+);
